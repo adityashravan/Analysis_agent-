@@ -1,0 +1,132 @@
+{
+  "upgrade": {
+    "workload": "Kubernetes",
+    "to_version": "SLES 15 SP7",
+    "from_version": "SLES 15 SP6"
+  },
+  "agent_metadata": {
+    "domain": "operating-system",
+    "evidence": [
+      "https://www.suse.com/releasenotes/x86_64/SUSE-SLES/15-SP7/index.html"
+    ],
+    "agent_name": "suse-os-agent",
+    "confidence": 0.95
+  },
+  "recommendations": [
+    "Prioritize the explicit definition of container registries to ensure basic image pull functionality survives the upgrade.",
+    "Perform a staged rollout of the kernel upgrade, monitoring a small subset of non-critical nodes for 'smc' related stability issues before proceeding to production clusters.",
+    "Adopt the standard containerized approach for all application dependencies (like Redis/Valkey) rather than relying on OS-provided host packages to mitigate future OS deprecations."
+  ],
+  "breaking_changes": [
+    {
+      "component": "Container Runtime Configuration",
+      "change_type": "breaking",
+      "description": "Default container registry entries for Docker Hub and openSUSE Registry have been explicitly removed from the default configuration (/etc/containers/registries.conf).",
+      "impact_severity": "CRITICAL",
+      "affected_k8s_components": [
+        "kubelet",
+        "container runtime",
+        "workloads"
+      ]
+    },
+    {
+      "component": "Kernel Driver Stability (smc)",
+      "change_type": "behavioral",
+      "description": "The updated smc (Shared Memory Communication) kernel driver has a known issue that can cause the system to freeze. This impacts node stability across all architectures.",
+      "impact_severity": "HIGH",
+      "affected_k8s_components": [
+        "kubelet",
+        "container runtime",
+        "node stability"
+      ]
+    },
+    {
+      "component": "Network Services (DHCP)",
+      "change_type": "breaking",
+      "description": "The ISC DHCP server (dhcpd) is end-of-life and has been replaced by Kea DHCP. Any custom cluster setups relying on the host's dhcpd package will fail post-upgrade unless configuration is migrated.",
+      "impact_severity": "MEDIUM",
+      "affected_k8s_components": [
+        "host networking",
+        "cluster IPAM"
+      ]
+    },
+    {
+      "component": "Package Removal (redis)",
+      "change_type": "breaking",
+      "description": "The 'redis' package has been removed from SLES 15 SP7. Dependencies must migrate to 'valkey' or use a containerized deployment.",
+      "impact_severity": "MEDIUM",
+      "affected_k8s_components": [
+        "workloads",
+        "node services"
+      ]
+    },
+    {
+      "component": "RPM Database Backend in SLE BCI",
+      "change_type": "behavioral",
+      "description": "The rpm package in the suse/sle15 container image now uses the NDB back-end instead of BDB. Host-based tools for scanning or building images may fail if they do not recognize the NDB format.",
+      "impact_severity": "MEDIUM",
+      "affected_k8s_components": [
+        "security scanning tools (DaemonSets)",
+        "image builders"
+      ]
+    }
+  ],
+  "mitigation_steps": [
+    {
+      "step": "1",
+      "action": "Platform engineers MUST deploy a configuration management task to pre-populate the '/etc/containers/registries.conf' file on all worker nodes with explicit registry definitions for Docker Hub and any other required external registries.",
+      "timing": "pre-upgrade",
+      "priority": "CRITICAL"
+    },
+    {
+      "step": "2",
+      "action": "Audit for and blacklist the 'smc' kernel module on all nodes where it is not strictly required to avoid potential system freezes and ensure node stability. Add 'blacklist smc' to '/etc/modprobe.d/blacklist.conf' and regenerate initrd if necessary.",
+      "timing": "pre-upgrade",
+      "priority": "HIGH"
+    },
+    {
+      "step": "3",
+      "action": "Audit for and replace any host-based service or application that relies on the system-provided 'redis' package with 'valkey' or a containerized equivalent before starting the upgrade process.",
+      "timing": "pre-upgrade",
+      "priority": "MEDIUM"
+    },
+    {
+      "step": "4",
+      "action": "Verify all existing nodes are using 'chrony' for time synchronization, as the 'tp' package is deprecated. Update node configuration policies to enforce 'chrony' for all new and upgraded nodes.",
+      "timing": "pre-upgrade",
+      "priority": "MEDIUM"
+    },
+    {
+      "step": "5",
+      "action": "Verify that custom BIND configurations (if used for local caching/forwarding on the host) are compatible with version 9.18, paying close attention to deprecated options that may cause the service to fail to start.",
+      "timing": "pre-upgrade",
+      "priority": "MEDIUM"
+    }
+  ],
+  "kubernetes_impact": [
+    {
+      "k8s_component": "kubelet and container runtime",
+      "required_actions": [
+        "Inject/configure an explicit '/etc/containers/registries.conf' on all target worker nodes before the upgrade.",
+        "Validate image pull capability post-upgrade with a test workload."
+      ],
+      "impact_description": "The removal of default container registry entries will immediately prevent 'kubelet' from pulling images from Docker Hub or openSUSE without a pre-configured explicit registry list, leading to ImagePullBackOff errors for all dependent Pods."
+    },
+    {
+      "k8s_component": "node stability",
+      "required_actions": [
+        "Check if the 'smc' module is required for the specific hardware/network configuration.",
+        "If not required, blacklist the 'smc' kernel module using a configuration management tool (e.g., Ansible, machine controller) prior to rebooting into the new kernel."
+      ],
+      "impact_description": "The instability in the updated 'smc' kernel driver introduces a high risk of unexpected node freezes/hard crashes, leading to frequent Pod evictions and workload downtime across the cluster."
+    },
+    {
+      "k8s_component": "security and image scanning",
+      "required_actions": [
+        "Verify all host-based security scanning tools are compatible with the NDB format introduced in SLES 15 SP3 and later.",
+        "Isolate and upgrade any host tools that inspect container RPMs to ensure NDB support."
+      ],
+      "impact_description": "Tools (often deployed as DaemonSets or CI/CD pre-checks) that inspect the RPM database of containers based on SUSE BCI will fail to read the new NDB format if the underlying host tools are not updated, causing false negatives or breakage in the security pipeline."
+    }
+  ]
+}

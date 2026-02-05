@@ -1,0 +1,38 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Vector store data
+vector_store/
+chroma_db/
+*.faiss
+*.pkl
+
+# Generated reports
+reports/*.json
+reports/*.html
+reports/*.pdf
+
+# Cache
+.cache/
+*.cache
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
