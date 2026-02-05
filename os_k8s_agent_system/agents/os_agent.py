@@ -1,12 +1,16 @@
 """
-OS Agent - SUSE Specialist
-Analyzes OS version changes and their impacts
+OS Agent - SUSE Specialist (Mino-Inspired Architecture)
+Analyzes OS version changes and their impacts using efficient LLM calls
 """
 
 import logging
-from typing import List, Dict, Any
+import hashlib
+import json
+from pathlib import Path
+from typing import List, Dict, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from core.models import (
     VersionChange, BreakingChange, MitigationStep,
     ImpactAnalysis, AgentMetadata, AnalysisReport
@@ -19,22 +23,39 @@ logger = logging.getLogger(__name__)
 class OSAgent:
     """
     Senior Linux OS Compatibility Engineer (SUSE)
+    
+    Mino-Inspired Optimizations:
+    - Hierarchical prompting (reduce expensive LLM calls)
+    - Response caching (avoid duplicate calls)
+    - Goal-based extraction (structured output)
+    - Streaming support for progress feedback
+    
     Specializes in:
     - SUSE Linux Enterprise Server internals
     - Kernel and system-level changes
     - OS-level dependency management
     """
     
+    # Response cache (Mino-style cost reduction)
+    _cache: Dict[str, Any] = {}
+    _cache_dir = Path("./cache")
+    
     def __init__(self, config, knowledge_base: KnowledgeBaseManager):
         self.config = config
         self.kb = knowledge_base
         
-        # Initialize LLM
+        # Ensure cache directory exists
+        self._cache_dir.mkdir(exist_ok=True)
+        
+        # Initialize LLM with streaming for progress feedback (Mino SSE-style)
+        callbacks = [StreamingStdOutCallbackHandler()] if config.use_streaming else []
+        
         if config.llm_provider == "openai":
             llm_kwargs = {
                 "model": config.llm_model,
                 "temperature": 0.1,
-                "openai_api_key": config.openai_api_key
+                "openai_api_key": config.openai_api_key,
+                "max_retries": config.max_retries,
             }
             if hasattr(config, 'openai_base_url') and config.openai_base_url:
                 llm_kwargs["base_url"] = config.openai_base_url
@@ -46,11 +67,17 @@ class OSAgent:
                 anthropic_api_key=config.anthropic_api_key
             )
         
-        # Define prompts
+        # Mino-Style Goal-Based Prompt (The "Secret Sauce")
+        # This is the key to good results - structured task specification
         self.analysis_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a Senior Linux OS Compatibility Engineer specializing in SUSE Linux Enterprise Server.
 
-Your expertise includes:
+=== AGENT IDENTITY (Mino-Style) ===
+Layer: Operating System
+Responsibility: Detect OS-level changes and predict downstream Kubernetes impact
+Output Consumer: Kubernetes Compatibility Agent
+
+=== YOUR EXPERTISE ===
 - SUSE Linux Enterprise Server internals and release notes
 - Kernel version changes, driver updates, and system impacts
 - System library and package management (zypper, RPM)
@@ -58,30 +85,29 @@ Your expertise includes:
 - Container runtime compatibility (CRI-O, containerd, podman)
 - systemd, networking (DHCP, DNS), and init system changes
 
-Your responsibility:
-- Detect SPECIFIC OS-level changes between versions
-- Identify breaking and behavioral changes with EXACT component names
-- Map changes to downstream impacts on Kubernetes
-- Provide evidence-based analysis with source URLs
-
-Constraints:
+=== CONSTRAINTS ===
 - Focus ONLY on OS-level changes
 - Be EXTREMELY SPECIFIC - name exact packages, config files, drivers
 - Cite specific sources and documentation URLs
-- State impact severity honestly (CRITICAL/HIGH/MEDIUM/LOW)"""),
+- State impact severity honestly (CRITICAL/HIGH/MEDIUM/LOW)
+- Do NOT propose Kubernetes architecture changes
+- Do NOT include general release-note fluff"""),
             
-            ("human", """Analyze the upgrade from {from_version} to {to_version} for Kubernetes workloads.
+            ("human", """=== TASK ===
+Analyze the upgrade from {from_version} to {to_version} for Kubernetes workloads.
 
-Context from knowledge base and release notes:
+=== CONTEXT FROM KNOWLEDGE BASE ===
 {context}
 
-YOU MUST output a valid JSON object with this EXACT structure:
+=== REQUIRED OUTPUT ===
+Return a valid JSON object with this EXACT structure:
+
 {{
   "breaking_changes": [
     {{
       "component": "Exact component name (e.g., 'Container Runtime Configuration', 'Kernel Driver Stability (smc)')",
       "change_type": "breaking|behavioral|deprecated",
-      "description": "Detailed technical description of what changed. Include specific file paths, package names, configuration keys. Explain WHY this breaks existing functionality.",
+      "description": "Detailed technical description. Include specific file paths, package names, configuration keys. Explain WHY this breaks existing functionality.",
       "impact_severity": "CRITICAL|HIGH|MEDIUM|LOW",
       "affected_k8s_components": ["kubelet", "container runtime", "specific affected components"]
     }}
@@ -103,7 +129,7 @@ YOU MUST output a valid JSON object with this EXACT structure:
   ]
 }}
 
-Focus on finding:
+=== FOCUS AREAS ===
 1. Removed or deprecated packages (like redis, dhcpd)
 2. Kernel driver changes or known issues
 3. Container registry configuration changes
@@ -111,19 +137,17 @@ Focus on finding:
 5. Networking stack changes (DHCP, DNS, time sync)
 6. Security/authentication changes
 
-For EACH change found:
+=== OUTPUT RULES ===
 - Name the EXACT component (package name, driver name, config file)
 - Describe WHAT changed technically
 - State WHY it breaks existing setups
 - Specify affected K8s components
 - Provide actionable mitigation with specific commands/paths
-
-Output ONLY the JSON object, no markdown, no explanations.""")
+- Output ONLY the JSON object, no markdown, no explanations.""")
         ])
         
         self.impact_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are analyzing the downstream impact of OS changes on {target_layer}.
-
 Map each OS-level change to specific impacts on the target layer."""),
             
             ("human", """OS Changes:
@@ -142,14 +166,59 @@ For each OS change, determine:
 Be specific about component names, configuration files, and required changes.""")
         ])
     
+    def _get_cache_key(self, version_change: VersionChange) -> str:
+        """Generate cache key for version change analysis"""
+        key_str = f"{version_change.from_version}:{version_change.to_version}:{version_change.workload}"
+        return hashlib.md5(key_str.encode()).hexdigest()
+    
+    def _load_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Load cached analysis result (Mino-style cost reduction)"""
+        if not self.config.enable_caching:
+            return None
+        
+        cache_file = self._cache_dir / f"os_analysis_{cache_key}.json"
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r') as f:
+                    logger.info(f"📦 Loading cached analysis: {cache_key[:8]}...")
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Cache load failed: {e}")
+        return None
+    
+    def _save_to_cache(self, cache_key: str, data: Dict[str, Any]):
+        """Save analysis result to cache"""
+        if not self.config.enable_caching:
+            return
+            
+        cache_file = self._cache_dir / f"os_analysis_{cache_key}.json"
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            logger.info(f"💾 Cached analysis: {cache_key[:8]}...")
+        except Exception as e:
+            logger.warning(f"Cache save failed: {e}")
+    
     def analyze_version_change(self, version_change: VersionChange) -> Dict[str, Any]:
         """
-        Analyze OS version change
-        Returns structured JSON analysis
+        Analyze OS version change (Mino-Inspired)
+        
+        Optimizations:
+        - Check cache first (avoid duplicate LLM calls)
+        - Single consolidated LLM call (not multiple small calls)
+        - Structured JSON output
         """
         logger.info(f"OS Agent analyzing: {version_change.from_version} → {version_change.to_version}")
         
+        # Check cache first (Mino 90% cost reduction principle)
+        cache_key = self._get_cache_key(version_change)
+        cached = self._load_from_cache(cache_key)
+        if cached:
+            logger.info("✅ Using cached analysis (saved LLM cost!)")
+            return cached
+        
         # Build search query
+        print("   📡 Gathering context from knowledge base...", flush=True)
         query = f"""
         {version_change.from_version} {version_change.to_version} release notes
         breaking changes deprecated removed packages
@@ -163,7 +232,8 @@ Be specific about component names, configuration files, and required changes."""
         if not context or len(context.strip()) < 100:
             context = "No specific knowledge base context available. Use your knowledge of SUSE Enterprise Linux."
         
-        # Run analysis with structured JSON output
+        # Run analysis with structured JSON output (Single LLM call - Mino efficiency)
+        print("   🧠 Running LLM analysis (this is the main cost)...", flush=True)
         chain = self.analysis_prompt | self.llm
         result = chain.invoke({
             "from_version": version_change.from_version,
@@ -172,7 +242,6 @@ Be specific about component names, configuration files, and required changes."""
         })
         
         # Parse JSON response
-        import json
         import re
         
         content = result.content.strip()
@@ -184,6 +253,10 @@ Be specific about component names, configuration files, and required changes."""
         try:
             analysis_data = json.loads(content)
             logger.info(f"OS Agent analysis complete: {len(analysis_data.get('breaking_changes', []))} breaking changes found")
+            
+            # Cache successful result
+            self._save_to_cache(cache_key, analysis_data)
+            
             return analysis_data
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON response: {e}")

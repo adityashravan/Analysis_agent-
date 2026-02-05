@@ -67,7 +67,16 @@ class AnalysisReport(BaseModel):
 
 # Configuration
 class Config:
-    """System configuration"""
+    """System configuration - Optimized for free/low-cost APIs (Mino-inspired)"""
+    
+    # Free tier compatible models on OpenRouter
+    FREE_MODELS = [
+        "google/gemini-2.0-flash-exp:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "qwen/qwen-2.5-72b-instruct:free",
+        "deepseek/deepseek-chat:free",
+        "mistralai/mistral-small-24b-instruct-2501:free"
+    ]
     
     def __init__(self):
         from dotenv import load_dotenv
@@ -77,10 +86,18 @@ class Config:
         self.openai_base_url = os.getenv("OPENAI_BASE_URL")
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
         self.llm_provider = os.getenv("LLM_PROVIDER", "openai")
-        self.llm_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+        self.llm_model = os.getenv("LLM_MODEL", "google/gemini-2.0-flash-exp:free")
         self.vector_store = os.getenv("VECTOR_STORE", "chromadb")
         self.chunk_size = int(os.getenv("CHUNK_SIZE", "1000"))
         self.chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "200"))
+        
+        # Mino-inspired efficiency settings
+        self.enable_caching = os.getenv("ENABLE_CACHING", "true").lower() == "true"
+        self.max_retries = int(os.getenv("MAX_RETRIES", "3"))
+        self.use_streaming = os.getenv("USE_STREAMING", "true").lower() == "true"
+        
+        # Embedding model - use smaller/free compatible
+        self.embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
         
     def validate(self) -> bool:
         """Validate configuration"""
@@ -89,3 +106,8 @@ class Config:
         if self.llm_provider == "anthropic" and not self.anthropic_api_key:
             raise ValueError("ANTHROPIC_API_KEY not set")
         return True
+    
+    def get_model_info(self) -> str:
+        """Get model information for display"""
+        is_free = any(free in self.llm_model for free in [":free", "free"])
+        return f"{self.llm_model} ({'FREE' if is_free else 'PAID'})"
