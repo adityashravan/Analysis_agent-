@@ -49,16 +49,56 @@ class ReportGenerator:
         self.console.print(f"   To:   [green]{upgrade.get('to_version')}[/green]")
         self.console.print(f"   Workload: [yellow]{upgrade.get('workload')}[/yellow]")
         
-        # Agent Metadata
-        metadata = analysis.get("agent_metadata", {})
+        # Agent Metadata - get from os_analysis.metadata
+        metadata = analysis.get("os_analysis", {}).get("metadata", {})
         self.console.print(f"\n🤖 [bold]Analysis Metadata:[/bold]")
-        self.console.print(f"   Agent: {metadata.get('agent_name')}")
-        self.console.print(f"   Domain: {metadata.get('domain')}")
-        self.console.print(f"   Confidence: {metadata.get('confidence', 0):.0%}")
-        self.console.print(f"   Evidence Sources: {len(metadata.get('evidence', []))}")
+        self.console.print(f"   Agent: {metadata.get('agent_name', 'N/A')}")
+        self.console.print(f"   Domain: {metadata.get('domain', 'N/A')}")
+        confidence = metadata.get('confidence', 0.85)  # Default confidence
+        self.console.print(f"   Confidence: {confidence:.0%}")
+        evidence = metadata.get('evidence_sources', [])
+        self.console.print(f"   Evidence Sources: {len(evidence)}")
+        
+        # Extract data from CORRECT paths
+        os_analysis = analysis.get("os_analysis", {})
+        breaking_changes = os_analysis.get("changes", [])
+        mitigation = os_analysis.get("mitigation_steps", [])
+        recommendations = os_analysis.get("recommendations", [])
+        
+        # Scrape verification data
+        scrape_verification = os_analysis.get("scrape_verification", {})
+        if scrape_verification:
+            self.console.print(f"\n📸 [bold]Data Source Verification:[/bold]")
+            
+            # Show screenshots
+            screenshots = scrape_verification.get("screenshots", [])
+            if screenshots:
+                self.console.print(f"   Screenshots captured: [green]{len(screenshots)}[/green]")
+                for ss in screenshots[:4]:  # Show first 4
+                    self.console.print(f"      → {ss.get('name')}: [dim]{ss.get('path')}[/dim]")
+                if len(screenshots) > 4:
+                    self.console.print(f"      → [dim]... and {len(screenshots) - 4} more[/dim]")
+            
+            # Show source URLs
+            source_urls = scrape_verification.get("source_urls", [])
+            if source_urls:
+                self.console.print(f"   Source URLs scraped: [green]{len(source_urls)}[/green]")
+                for url in source_urls:
+                    self.console.print(f"      → [blue]{url}[/blue]")
+            
+            # Show sections found
+            sections = scrape_verification.get("sections_found", [])
+            if sections:
+                self.console.print(f"   Sections extracted: [green]{len(sections)}[/green]")
+                for section in sections:
+                    self.console.print(f"      → {section.get('section')}: {section.get('chars_extracted', 0)} chars")
+        
+        # Get K8s impacts from downstream
+        downstream = analysis.get("downstream_impacts", {})
+        k8s_data = downstream.get("kubernetes-agent", {})
+        k8s_impact = k8s_data.get("impacts", [])
         
         # Breaking Changes Table
-        breaking_changes = analysis.get("breaking_changes", [])
         if breaking_changes:
             self.console.print(f"\n\n🔥 [bold red]BREAKING CHANGES ({len(breaking_changes)})[/bold red]\n")
             
@@ -79,11 +119,11 @@ class ReportGenerator:
             severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
             sorted_changes = sorted(
                 breaking_changes,
-                key=lambda x: severity_order.get(x.get("impact_severity", "LOW"), 4)
+                key=lambda x: severity_order.get(x.get("severity", "LOW"), 4)
             )
             
             for change in sorted_changes:
-                severity = change.get("impact_severity", "")
+                severity = change.get("severity", "")
                 severity_style = {
                     "CRITICAL": "[bold red]🔴 CRITICAL[/bold red]",
                     "HIGH": "[bold orange1]🟠 HIGH[/bold orange1]",
@@ -91,18 +131,20 @@ class ReportGenerator:
                     "LOW": "[bold green]🟢 LOW[/bold green]"
                 }.get(severity, severity)
                 
+                # Get affected K8s components from metadata
+                affected = change.get("metadata", {}).get("affected_k8s_components", [])
+                
                 table.add_row(
                     severity_style,
                     change.get("component", ""),
                     change.get("change_type", ""),
                     change.get("description", "")[:100] + "..." if len(change.get("description", "")) > 100 else change.get("description", ""),
-                    ", ".join(change.get("affected_k8s_components", [])[:2])
+                    ", ".join(affected[:2]) if affected else "N/A"
                 )
             
             self.console.print(table)
         
-        # Kubernetes Impact Table
-        k8s_impact = analysis.get("kubernetes_impact", [])
+        # Kubernetes Impact Table (k8s_impact already set above)
         if k8s_impact:
             self.console.print(f"\n\n☸️  [bold blue]KUBERNETES IMPACT ({len(k8s_impact)})[/bold blue]\n")
             
@@ -131,8 +173,7 @@ class ReportGenerator:
             
             self.console.print(table)
         
-        # Mitigation Steps Table
-        mitigation = analysis.get("mitigation_steps", [])
+        # Mitigation Steps Table (mitigation variable already set above)
         if mitigation:
             self.console.print(f"\n\n🛠️  [bold green]MITIGATION STEPS ({len(mitigation)})[/bold green]\n")
             
@@ -165,8 +206,7 @@ class ReportGenerator:
             
             self.console.print(table)
         
-        # Recommendations
-        recommendations = analysis.get("recommendations", [])
+        # Recommendations (recommendations variable already set above)
         if recommendations:
             self.console.print(f"\n\n💡 [bold yellow]RECOMMENDATIONS[/bold yellow]\n")
             for i, rec in enumerate(recommendations, 1):
@@ -208,14 +248,21 @@ class ReportGenerator:
         lines.append(f"**Target Workload**: {upgrade.get('workload')}\n\n")
         lines.append(f"**Analysis Date**: {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}\n\n")
         
-        # Quick Stats
-        breaking_changes = analysis.get("breaking_changes", [])
-        k8s_impact = analysis.get("kubernetes_impact", [])
-        mitigation = analysis.get("mitigation_steps", [])
-        recommendations = analysis.get("recommendations", [])
+        # Extract data from CORRECT paths in the JSON structure
+        os_analysis = analysis.get("os_analysis", {})
+        breaking_changes = os_analysis.get("changes", [])
+        mitigation = os_analysis.get("mitigation_steps", [])
+        recommendations = os_analysis.get("recommendations", [])
+        metadata = os_analysis.get("metadata", {})
         
-        critical_count = sum(1 for c in breaking_changes if c.get('impact_severity') == 'CRITICAL')
-        high_count = sum(1 for c in breaking_changes if c.get('impact_severity') == 'HIGH')
+        # Get Kubernetes impacts from downstream_impacts
+        downstream = analysis.get("downstream_impacts", {})
+        k8s_data = downstream.get("kubernetes-agent", {})
+        k8s_impact = k8s_data.get("impacts", [])
+        
+        # Count severities
+        critical_count = sum(1 for c in breaking_changes if c.get('severity') == 'CRITICAL')
+        high_count = sum(1 for c in breaking_changes if c.get('severity') == 'HIGH')
         
         lines.append("### 📊 Analysis Summary\n\n")
         lines.append(f"- **Total Breaking Changes**: {len(breaking_changes)}\n")
@@ -225,19 +272,58 @@ class ReportGenerator:
         lines.append(f"- **Required Mitigation Steps**: {len(mitigation)}\n")
         lines.append(f"- **Strategic Recommendations**: {len(recommendations)}\n\n")
         
-        # Agent Metadata
-        metadata = analysis.get("agent_metadata", {})
+        # Agent Metadata - from os_analysis.metadata
+        evidence_sources = metadata.get("evidence_sources", [])
         lines.append("### 🤖 Analysis Metadata\n\n")
         lines.append(f"- **Agent**: {metadata.get('agent_name', 'N/A')}\n")
         lines.append(f"- **Domain**: {metadata.get('domain', 'N/A')}\n")
-        lines.append(f"- **Confidence Score**: {metadata.get('confidence', 0):.0%}\n")
-        lines.append(f"- **Evidence Sources**: {len(metadata.get('evidence', []))}\n\n")
+        lines.append(f"- **From Version**: {metadata.get('from_version', 'N/A')}\n")
+        lines.append(f"- **To Version**: {metadata.get('to_version', 'N/A')}\n")
+        lines.append(f"- **Evidence Sources**: {len(evidence_sources)}\n\n")
         
-        if metadata.get('evidence'):
+        if evidence_sources:
             lines.append("**Documentation Sources**:\n")
-            for source in metadata.get('evidence', []):
+            for source in evidence_sources:
                 lines.append(f"- {source}\n")
             lines.append("\n")
+        
+        # Scrape Verification Section - Screenshots and Source Tracking
+        scrape_verification = os_analysis.get("scrape_verification", {})
+        if scrape_verification:
+            lines.append("### 📸 Data Source Verification\n\n")
+            lines.append("*This section shows proof of where the analysis data came from*\n\n")
+            
+            # Source URLs
+            source_urls = scrape_verification.get("source_urls", [])
+            if source_urls:
+                lines.append("**URLs Scraped**:\n")
+                for url in source_urls:
+                    lines.append(f"- [{url}]({url})\n")
+                lines.append("\n")
+            
+            # Screenshots
+            screenshots = scrape_verification.get("screenshots", [])
+            if screenshots:
+                lines.append(f"**Screenshots Captured** ({len(screenshots)} total):\n\n")
+                lines.append("| Screenshot | Description | Path |\n")
+                lines.append("|------------|-------------|------|\n")
+                for ss in screenshots:
+                    lines.append(f"| {ss.get('name', 'N/A')} | {ss.get('description', 'N/A')} | `{ss.get('path', 'N/A')}` |\n")
+                lines.append("\n")
+            
+            # Sections Found
+            sections = scrape_verification.get("sections_found", [])
+            if sections:
+                lines.append("**Sections Extracted from Release Notes**:\n\n")
+                lines.append("| Section | Elements Found | Characters Extracted |\n")
+                lines.append("|---------|----------------|---------------------|\n")
+                for section in sections:
+                    lines.append(f"| {section.get('section', 'N/A')} | {section.get('count', 0)} | {section.get('chars_extracted', 0):,} |\n")
+                lines.append("\n")
+            
+            # Scrape timestamp
+            if scrape_verification.get("scrape_timestamp"):
+                lines.append(f"*Scraped at: {scrape_verification.get('scrape_timestamp')}*\n\n")
         
         lines.append("---\n\n")
         
@@ -249,13 +335,15 @@ class ReportGenerator:
             # Create detailed table
             table_data = []
             for change in breaking_changes:
-                severity = change.get('impact_severity', '')
+                severity = change.get('severity', '')
                 emoji = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🟢'}.get(severity, '')
+                # Get affected components from metadata
+                affected = change.get('metadata', {}).get('affected_k8s_components', [])
                 table_data.append({
                     'Severity': f"{emoji} {severity}",
                     'Component': change.get('component', '')[:40],
                     'Type': change.get('change_type', ''),
-                    'K8s Components': ', '.join(change.get('affected_k8s_components', [])[:3])
+                    'K8s Components': ', '.join(affected[:3]) if affected else 'N/A'
                 })
             
             df = pd.DataFrame(table_data)
@@ -265,7 +353,7 @@ class ReportGenerator:
             # Detailed descriptions
             lines.append("### Detailed Analysis\n\n")
             for i, change in enumerate(breaking_changes, 1):
-                severity = change.get('impact_severity', '')
+                severity = change.get('severity', '')
                 emoji = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🟢'}.get(severity, '')
                 
                 lines.append(f"#### {i}. {change.get('component', 'Unknown Component')} {emoji}\n\n")
@@ -274,7 +362,7 @@ class ReportGenerator:
                 lines.append(f"**Description**:\n\n")
                 lines.append(f"{change.get('description', 'No description available.')}\n\n")
                 
-                affected = change.get('affected_k8s_components', [])
+                affected = change.get('metadata', {}).get('affected_k8s_components', [])
                 if affected:
                     lines.append(f"**Affected Kubernetes Components**:\n")
                     for comp in affected:

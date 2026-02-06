@@ -1,30 +1,40 @@
 """
 OS Agent - SUSE Specialist (Mino-Inspired Architecture)
 Analyzes OS version changes and their impacts using efficient LLM calls
+
+Enhanced with upstream-downstream pattern:
+- Accepts simple version strings from user
+- Scrapes SUSE release notes using Playwright (Mino-style)
+- Analyzes OS-level changes using scraped content
+- Automatically propagates to downstream agents (Kubernetes, Database, etc.)
 """
 
 import logging
 import hashlib
 import json
+import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from core.models import (
     VersionChange, BreakingChange, MitigationStep,
     ImpactAnalysis, AgentMetadata, AnalysisReport
 )
 from core.knowledge_base import KnowledgeBaseManager
+from core.base_agent import BaseAgent, AgentChange
 
 logger = logging.getLogger(__name__)
 
 
-class OSAgent:
+class OSAgent(BaseAgent):
     """
     Senior Linux OS Compatibility Engineer (SUSE)
     
     Mino-Inspired Optimizations:
+    - Web scraping first (Playwright) - fetch real data
     - Hierarchical prompting (reduce expensive LLM calls)
     - Response caching (avoid duplicate calls)
     - Goal-based extraction (structured output)
@@ -34,15 +44,34 @@ class OSAgent:
     - SUSE Linux Enterprise Server internals
     - Kernel and system-level changes
     - OS-level dependency management
+    
+    Upstream-Downstream Pattern:
+    - Root agent in the dependency chain
+    - Propagates OS changes to downstream agents automatically
+    - Supports registering new downstream agents dynamically
     """
     
     # Response cache (Mino-style cost reduction)
     _cache: Dict[str, Any] = {}
     _cache_dir = Path("./cache")
     
+    # SUSE Release Notes URLs - scraped for real data
+    SUSE_RELEASE_NOTES_URLS = {
+        "SLES 15 SP4": "https://www.suse.com/releasenotes/x86_64/SUSE-SLES/15-SP4/index.html",
+        "SLES 15 SP5": "https://www.suse.com/releasenotes/x86_64/SUSE-SLES/15-SP5/index.html",
+        "SLES 15 SP6": "https://www.suse.com/releasenotes/x86_64/SUSE-SLES/15-SP6/index.html",
+        "SLES 15 SP7": "https://www.suse.com/releasenotes/x86_64/SUSE-SLES/15-SP7/index.html",
+    }
+    
+    # Additional documentation sources to scrape
+    SUSE_DOCS_URLS = [
+        "https://documentation.suse.com/sles/15-SP7/html/SLES-all/cha-upgrade-background.html",
+        "https://documentation.suse.com/sles/15-SP7/html/SLES-all/cha-upgrade-paths.html",
+    ]
+    
     def __init__(self, config, knowledge_base: KnowledgeBaseManager):
-        self.config = config
-        self.kb = knowledge_base
+        # Initialize base agent
+        super().__init__(config, knowledge_base, agent_name="os-agent", domain="operating-system")
         
         # Ensure cache directory exists
         self._cache_dir.mkdir(exist_ok=True)
@@ -199,14 +228,264 @@ Be specific about component names, configuration files, and required changes."""
         except Exception as e:
             logger.warning(f"Cache save failed: {e}")
     
+    # ============================================
+    # WEB SCRAPING METHODS (Mino-Style) with Screenshots
+    # ============================================
+    
+    # Screenshots directory
+    _screenshots_dir = Path("./screenshots")
+    
+    def _get_release_notes_url(self, version: str) -> str:
+        """Get URL for a SUSE version's release notes"""
+        if version in self.SUSE_RELEASE_NOTES_URLS:
+            return self.SUSE_RELEASE_NOTES_URLS[version]
+        
+        # Try to construct URL from version string
+        # e.g., "SLES 15 SP7" -> "15-SP7"
+        version_clean = version.replace("SLES ", "").replace(" ", "-")
+        return f"https://www.suse.com/releasenotes/x86_64/SUSE-SLES/{version_clean}/index.html"
+    
+    async def _scrape_release_notes_async(self, version: str) -> Dict[str, Any]:
+        """Scrape release notes using Playwright (async) with screenshots for verification"""
+        from datetime import datetime
+        
+        url = self._get_release_notes_url(version)
+        print(f"   🌐 Scraping: {url}", flush=True)
+        
+        # Ensure screenshots directory exists
+        self._screenshots_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        version_safe = version.replace(" ", "_").replace(".", "-")
+        
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            logger.warning("Playwright not installed. Run: uv pip install playwright && playwright install chromium")
+            return {"error": "Playwright not installed", "url": url, "version": version}
+        
+        scraped_data = {
+            "url": url,
+            "version": version,
+            "removed_deprecated": "",
+            "technology_changes": "",
+            "known_issues": "",
+            "full_content": "",
+            "scrape_success": False,
+            "screenshots": [],
+            "sections_found": [],
+            "scrape_timestamp": timestamp
+        }
+        
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page(viewport={"width": 1920, "height": 1080})
+                
+                print(f"   📄 Loading page...", flush=True)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(2000)  # Wait for dynamic content
+                
+                # Screenshot 1: Full page after load
+                screenshot_path = self._screenshots_dir / f"{version_safe}_{timestamp}_01_full_page.png"
+                await page.screenshot(path=str(screenshot_path), full_page=True)
+                scraped_data["screenshots"].append({
+                    "name": "Full Page",
+                    "path": str(screenshot_path),
+                    "description": f"Complete page view of {version} release notes"
+                })
+                print(f"   📸 Screenshot saved: {screenshot_path.name}", flush=True)
+                
+                # Extract specific sections
+                print(f"   🔍 Extracting sections...", flush=True)
+                
+                # Get the full content first
+                full_text = await page.inner_text("body")
+                scraped_data["full_content"] = full_text[:50000]  # Limit size
+                
+                # Try to find removed/deprecated section
+                removed_sections = await page.query_selector_all("[id*='removed'], [id*='deprecated'], [id*='Removed'], [id*='Deprecated']")
+                if removed_sections:
+                    texts = []
+                    for i, section in enumerate(removed_sections[:3]):
+                        # Scroll to section and screenshot
+                        await section.scroll_into_view_if_needed()
+                        await page.wait_for_timeout(500)
+                        
+                        # Take screenshot of this section
+                        screenshot_path = self._screenshots_dir / f"{version_safe}_{timestamp}_02_removed_{i+1}.png"
+                        await page.screenshot(path=str(screenshot_path))
+                        scraped_data["screenshots"].append({
+                            "name": f"Removed/Deprecated Section {i+1}",
+                            "path": str(screenshot_path),
+                            "description": "Section showing removed or deprecated features"
+                        })
+                        print(f"   📸 Screenshot saved: {screenshot_path.name}", flush=True)
+                        
+                        parent = await section.evaluate_handle("el => el.closest('section') || el.parentElement || el")
+                        text = await parent.inner_text()
+                        texts.append(text)
+                    scraped_data["removed_deprecated"] = "\n\n".join(texts)
+                    scraped_data["sections_found"].append({
+                        "section": "Removed/Deprecated",
+                        "count": len(removed_sections),
+                        "chars_extracted": len(scraped_data["removed_deprecated"])
+                    })
+                
+                # Try to find technology changes
+                tech_sections = await page.query_selector_all("[id*='technology'], [id*='Technology'], [id*='changes'], [id*='Changes']")
+                if tech_sections:
+                    texts = []
+                    for i, section in enumerate(tech_sections[:2]):
+                        await section.scroll_into_view_if_needed()
+                        await page.wait_for_timeout(500)
+                        
+                        screenshot_path = self._screenshots_dir / f"{version_safe}_{timestamp}_03_tech_{i+1}.png"
+                        await page.screenshot(path=str(screenshot_path))
+                        scraped_data["screenshots"].append({
+                            "name": f"Technology Changes Section {i+1}",
+                            "path": str(screenshot_path),
+                            "description": "Section showing technology and system changes"
+                        })
+                        print(f"   📸 Screenshot saved: {screenshot_path.name}", flush=True)
+                        
+                        parent = await section.evaluate_handle("el => el.closest('section') || el.parentElement || el")
+                        text = await parent.inner_text()
+                        texts.append(text)
+                    scraped_data["technology_changes"] = "\n\n".join(texts)
+                    scraped_data["sections_found"].append({
+                        "section": "Technology Changes",
+                        "count": len(tech_sections),
+                        "chars_extracted": len(scraped_data["technology_changes"])
+                    })
+                
+                # Try to find known issues
+                issues_sections = await page.query_selector_all("[id*='known'], [id*='Known'], [id*='issues'], [id*='Issues']")
+                if issues_sections:
+                    texts = []
+                    for i, section in enumerate(issues_sections[:2]):
+                        await section.scroll_into_view_if_needed()
+                        await page.wait_for_timeout(500)
+                        
+                        screenshot_path = self._screenshots_dir / f"{version_safe}_{timestamp}_04_issues_{i+1}.png"
+                        await page.screenshot(path=str(screenshot_path))
+                        scraped_data["screenshots"].append({
+                            "name": f"Known Issues Section {i+1}",
+                            "path": str(screenshot_path),
+                            "description": "Section showing known issues and bugs"
+                        })
+                        print(f"   📸 Screenshot saved: {screenshot_path.name}", flush=True)
+                        
+                        parent = await section.evaluate_handle("el => el.closest('section') || el.parentElement || el")
+                        text = await parent.inner_text()
+                        texts.append(text)
+                    scraped_data["known_issues"] = "\n\n".join(texts)
+                    scraped_data["sections_found"].append({
+                        "section": "Known Issues",
+                        "count": len(issues_sections),
+                        "chars_extracted": len(scraped_data["known_issues"])
+                    })
+                
+                scraped_data["scrape_success"] = True
+                await browser.close()
+                
+                # Print summary
+                print(f"   ✅ Scraped {len(scraped_data['full_content'])} chars from {version}", flush=True)
+                print(f"   📸 Total screenshots: {len(scraped_data['screenshots'])}", flush=True)
+                print(f"   📋 Sections found: {len(scraped_data['sections_found'])}", flush=True)
+                
+        except Exception as e:
+            logger.error(f"Scraping failed for {version}: {e}")
+            scraped_data["error"] = str(e)
+        
+        return scraped_data
+    
+    def _scrape_release_notes(self, version: str) -> Dict[str, Any]:
+        """Synchronous wrapper for scraping"""
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return loop.run_until_complete(self._scrape_release_notes_async(version))
+    
+    def _scrape_multiple_versions(self, from_version: str, to_version: str) -> Dict[str, Any]:
+        """Scrape release notes for both versions and combine - returns context and metadata"""
+        print("\n" + "="*70, flush=True)
+        print("  🌐 WEB SCRAPING: Fetching REAL SUSE Release Notes", flush=True)
+        print("="*70, flush=True)
+        
+        # Scrape target version (most important)
+        print(f"\n📥 Fetching {to_version} release notes...", flush=True)
+        to_notes = self._scrape_release_notes(to_version)
+        
+        # Scrape source version for comparison
+        print(f"\n📥 Fetching {from_version} release notes...", flush=True)
+        from_notes = self._scrape_release_notes(from_version)
+        
+        # Combine scraped content into context
+        context_parts = []
+        all_screenshots = []
+        all_sections = []
+        source_urls = []
+        
+        if to_notes.get("scrape_success"):
+            context_parts.append(f"""
+=== {to_version} RELEASE NOTES (TARGET VERSION) ===
+URL: {to_notes.get('url')}
+
+--- REMOVED AND DEPRECATED FEATURES ---
+{to_notes.get('removed_deprecated', 'Section not found')[:15000]}
+
+--- TECHNOLOGY CHANGES ---
+{to_notes.get('technology_changes', 'Section not found')[:5000]}
+
+--- KNOWN ISSUES ---
+{to_notes.get('known_issues', 'Section not found')[:5000]}
+""")
+            all_screenshots.extend(to_notes.get("screenshots", []))
+            all_sections.extend(to_notes.get("sections_found", []))
+            source_urls.append(to_notes.get("url"))
+        else:
+            context_parts.append(f"⚠️ Failed to scrape {to_version}: {to_notes.get('error', 'Unknown error')}")
+        
+        if from_notes.get("scrape_success"):
+            context_parts.append(f"""
+=== {from_version} RELEASE NOTES (SOURCE VERSION) ===
+URL: {from_notes.get('url')}
+
+--- KEY CONTENT (for comparison) ---
+{from_notes.get('full_content', '')[:10000]}
+""")
+            all_screenshots.extend(from_notes.get("screenshots", []))
+            all_sections.extend(from_notes.get("sections_found", []))
+            source_urls.append(from_notes.get("url"))
+        
+        combined = "\n\n".join(context_parts)
+        print(f"\n✅ Combined scraped content: {len(combined)} characters", flush=True)
+        print(f"📸 Total screenshots captured: {len(all_screenshots)}", flush=True)
+        print("="*70 + "\n", flush=True)
+        
+        # Return both context and metadata
+        return {
+            "context": combined,
+            "screenshots": all_screenshots,
+            "sections_found": all_sections,
+            "source_urls": source_urls,
+            "from_notes_success": from_notes.get("scrape_success", False),
+            "to_notes_success": to_notes.get("scrape_success", False),
+            "scrape_timestamp": to_notes.get("scrape_timestamp", "")
+        }
+    
     def analyze_version_change(self, version_change: VersionChange) -> Dict[str, Any]:
         """
         Analyze OS version change (Mino-Inspired)
         
-        Optimizations:
-        - Check cache first (avoid duplicate LLM calls)
-        - Single consolidated LLM call (not multiple small calls)
-        - Structured JSON output
+        Flow:
+        1. Check cache first (avoid duplicate work)
+        2. SCRAPE real SUSE release notes using Playwright
+        3. Use scraped content as LLM context
+        4. Single consolidated LLM call for analysis
         """
         logger.info(f"OS Agent analyzing: {version_change.from_version} → {version_change.to_version}")
         
@@ -217,23 +496,46 @@ Be specific about component names, configuration files, and required changes."""
             logger.info("✅ Using cached analysis (saved LLM cost!)")
             return cached
         
-        # Build search query
-        print("   📡 Gathering context from knowledge base...", flush=True)
+        # STEP 1: Scrape SUSE release notes (Mino-style web automation)
+        print("   📡 Step 1: Scraping SUSE release notes (Playwright)...", flush=True)
+        scrape_result = self._scrape_multiple_versions(
+            version_change.from_version, 
+            version_change.to_version
+        )
+        
+        # Extract context and metadata from scrape result
+        scraped_context = scrape_result.get("context", "")
+        scrape_metadata = {
+            "screenshots": scrape_result.get("screenshots", []),
+            "sections_found": scrape_result.get("sections_found", []),
+            "source_urls": scrape_result.get("source_urls", []),
+            "scrape_timestamp": scrape_result.get("scrape_timestamp", "")
+        }
+        
+        # STEP 2: Also get knowledge base context (if available)
+        print("   📚 Step 2: Checking local knowledge base...", flush=True)
         query = f"""
         {version_change.from_version} {version_change.to_version} release notes
         breaking changes deprecated removed packages
         kernel changes driver issues systemd networking container runtime
-        podman cri-o containerd registry configuration
         """
+        kb_context = self.kb.get_relevant_context(query, max_tokens=4000)
         
-        # Get relevant context from knowledge base
-        context = self.kb.get_relevant_context(query, max_tokens=8000)
+        # STEP 3: Combine contexts - scraped data is PRIMARY
+        if scraped_context and len(scraped_context.strip()) > 500:
+            context = scraped_context
+            if kb_context and len(kb_context.strip()) > 100:
+                context += f"\n\n=== ADDITIONAL KNOWLEDGE BASE CONTEXT ===\n{kb_context}"
+            print(f"   ✅ Using SCRAPED content as primary source ({len(context)} chars)", flush=True)
+        elif kb_context and len(kb_context.strip()) > 100:
+            context = kb_context
+            print("   ⚠️ Scraping failed, using knowledge base only", flush=True)
+        else:
+            context = "No scraped or knowledge base context available. Use your training knowledge of SUSE Enterprise Linux."
+            print("   ⚠️ No external context available, using LLM knowledge only", flush=True)
         
-        if not context or len(context.strip()) < 100:
-            context = "No specific knowledge base context available. Use your knowledge of SUSE Enterprise Linux."
-        
-        # Run analysis with structured JSON output (Single LLM call - Mino efficiency)
-        print("   🧠 Running LLM analysis (this is the main cost)...", flush=True)
+        # STEP 4: Run LLM analysis with scraped context
+        print("   🧠 Step 3: Running LLM analysis on scraped content...", flush=True)
         chain = self.analysis_prompt | self.llm
         result = chain.invoke({
             "from_version": version_change.from_version,
@@ -254,6 +556,9 @@ Be specific about component names, configuration files, and required changes."""
             analysis_data = json.loads(content)
             logger.info(f"OS Agent analysis complete: {len(analysis_data.get('breaking_changes', []))} breaking changes found")
             
+            # Add scrape metadata to analysis_data for verification
+            analysis_data["scrape_verification"] = scrape_metadata
+            
             # Cache successful result
             self._save_to_cache(cache_key, analysis_data)
             
@@ -261,14 +566,15 @@ Be specific about component names, configuration files, and required changes."""
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON response: {e}")
             logger.error(f"Raw content: {content[:500]}")
-            # Return minimal structure
+            # Return minimal structure with scrape metadata
             return {
                 "breaking_changes": [],
                 "evidence_sources": [],
                 "mitigation_steps": [],
                 "recommendations": [],
                 "parse_error": str(e),
-                "raw_response": content
+                "raw_response": content,
+                "scrape_verification": scrape_metadata
             }
     
     def analyze_impact(self, os_changes: str, target_layer: str) -> str:
@@ -295,3 +601,83 @@ Be specific about component names, configuration files, and required changes."""
             confidence=0.0,  # Will be calculated based on evidence
             evidence_sources=[]
         )
+
+    
+    # BaseAgent abstract methods implementation
+    
+    def analyze_changes(self, from_version: str, to_version: str, **kwargs) -> Dict[str, Any]:
+        """
+        Simplified interface - user just provides two version strings
+        
+        Args:
+            from_version: Source OS version (e.g., "SLES 15 SP6")
+            to_version: Target OS version (e.g., "SLES 15 SP7")
+            
+        Returns:
+            Structured analysis with changes, impacts, and recommendations
+        """
+        logger.info(f"OS Agent: Analyzing {from_version} → {to_version}")
+        
+        # Create version change object internally
+        version_change = VersionChange(
+            layer="OS",
+            from_version=from_version,
+            to_version=to_version,
+            workload=kwargs.get('workload', 'Kubernetes')
+        )
+        
+        # Run existing analysis
+        os_analysis = self.analyze_version_change(version_change)
+        
+        # Convert to standard change format
+        changes = []
+        for breaking_change in os_analysis.get('breaking_changes', []):
+            changes.append(AgentChange(
+                component=breaking_change.get('component', 'Unknown'),
+                change_type=breaking_change.get('change_type', 'unknown'),
+                description=breaking_change.get('description', ''),
+                severity=breaking_change.get('impact_severity', 'MEDIUM'),
+                metadata={
+                    'affected_k8s_components': breaking_change.get('affected_k8s_components', []),
+                    'source': 'os-agent'
+                }
+            ))
+        
+        result = {
+            'changes': changes,
+            'metadata': {
+                'agent_name': self.agent_name,
+                'domain': self.domain,
+                'from_version': from_version,
+                'to_version': to_version,
+                'evidence_sources': os_analysis.get('evidence_sources', [])
+            },
+            'mitigation_steps': os_analysis.get('mitigation_steps', []),
+            'recommendations': os_analysis.get('recommendations', []),
+            'raw_analysis': os_analysis,  # Keep full analysis for reference
+            'scrape_verification': os_analysis.get('scrape_verification', {})  # Screenshots and source tracking
+        }
+        
+        # Auto-propagate to downstream agents
+        if self._downstream_agents:
+            logger.info(f"OS Agent: Propagating {len(changes)} changes to downstream agents...")
+            downstream_results = self.propagate_to_downstream(changes)
+            result['downstream_impacts'] = downstream_results
+        
+        return result
+    
+    def analyze_upstream_impact(self, upstream_changes: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        OS Agent is typically a root agent, so this may not be called often
+        But we implement it for flexibility (e.g., if firmware/BIOS changes affect OS)
+        """
+        logger.info(f"OS Agent: Analyzing {len(upstream_changes)} upstream changes")
+        
+        # For now, log and pass through
+        # Could analyze how hardware/firmware changes affect OS in future
+        return {
+            'impacts': [],
+            'required_actions': [],
+            'risk_level': 'LOW',
+            'note': 'OS Agent typically does not have upstream dependencies'
+        }

@@ -4,6 +4,7 @@ Main entry point for OS & Kubernetes Version Impact Analysis System
 
 import logging
 import sys
+import argparse
 from pathlib import Path
 from datetime import datetime
 
@@ -23,11 +24,12 @@ logger = logging.getLogger(__name__)
 
 def main():
     """
-    Main execution flow - Generates comprehensive Markdown report
+    Main execution flow - Simplified user experience
+    User just specifies two OS versions!
     """
     print("\n" + "="*100, flush=True)
     print("  OS & KUBERNETES VERSION IMPACT ANALYSIS SYSTEM", flush=True)
-    print("  Multi-Agent Architecture for Cross-Layer Compatibility Analysis", flush=True)
+    print("  Multi-Agent Architecture with Upstream-Downstream Pattern", flush=True)
     print("="*100 + "\n", flush=True)
     
     # Load configuration
@@ -39,7 +41,14 @@ def main():
         config.validate()
         print("✅ Configuration validated", flush=True)
         print(f"   LLM Provider: {config.llm_provider}", flush=True)
-        print(f"   Model: {config.llm_model}\n", flush=True)
+        print(f"   Model: {config.llm_model}", flush=True)
+
+        # Display API key fallback status
+        if config.fallback_api_keys:
+            print(f"   🔑 Backup API Keys: {len(config.fallback_api_keys)} available", flush=True)
+            print(f"   💡 Fallback: Enabled (will auto-switch if primary key exhausts)\n", flush=True)
+        else:
+            print(f"   ⚠️  No backup API keys configured\n", flush=True)
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
         print(f"\n❌ Configuration Error: {e}", flush=True)
@@ -53,34 +62,63 @@ def main():
     logger.info("Initializing orchestrator...")
     print("🤖 Step 2: Initializing multi-agent system...", flush=True)
     orchestrator = Orchestrator(config)
-    print("✅ Multi-agent system initialized\n", flush=True)
+    print("✅ Multi-agent system initialized", flush=True)
+    print(f"   Agents ready: OS Agent, Kubernetes Agent", flush=True)
+    print(f"   Dependency chain: OS Agent → Kubernetes Agent\n", flush=True)
     
     # Skip knowledge base for now - use LLM's built-in knowledge
     print("📚 Step 3: Knowledge Base - Using LLM's built-in knowledge", flush=True)
     print("-" * 100, flush=True)
-    print("   (To add custom sources, uncomment the knowledge_sources section in main.py)\n", flush=True)
+    print("   (To add custom sources, uncomment the knowledge_sources section below)\n", flush=True)
     
-    # Define version change to analyze
-    version_change = VersionChange(
-        layer="OS",
-        from_version="SLES 15 SP6",
-        to_version="SLES 15 SP7",
-        workload="Kubernetes"
-    )
+    # ============================================
+    # USER INPUT - Get OS versions from user or command line
+    # ============================================
     
-    print(f"🔍 Analyzing Version Change:")
-    print(f"   From: {version_change.from_version}")
-    print(f"   To:   {version_change.to_version}")
-    print(f"   Workload: {version_change.workload}")
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='OS & Kubernetes Version Impact Analysis')
+    parser.add_argument('--from', dest='from_version', type=str, help='Source OS version (e.g., "SLES 15 SP6")')
+    parser.add_argument('--to', dest='to_version', type=str, help='Target OS version (e.g., "SLES 15 SP7")')
+    args, _ = parser.parse_known_args()
+    
+    # Check if versions provided via command line
+    if args.from_version and args.to_version:
+        from_version = args.from_version
+        to_version = args.to_version
+        print("=" * 100)
+        print("  USING COMMAND-LINE ARGUMENTS")
+        print("=" * 100)
+    else:
+        # Interactive mode - get from user input
+        print("=" * 100)
+        print("  USER INPUT")
+        print("=" * 100)
+        print("\nPlease provide the OS version details:\n")
+
+        # Get current OS version
+        from_version = input("Enter current OS version (e.g., SLES 15 SP6): ").strip()
+        if not from_version:
+            from_version = "SLES 15 SP6"  # Default fallback
+            print(f"   No input provided. Using default: {from_version}")
+
+        # Get new OS version
+        to_version = input("Enter new OS version (e.g., SLES 15 SP7): ").strip()
+        if not to_version:
+            to_version = "SLES 15 SP7"  # Default fallback
+            print(f"   No input provided. Using default: {to_version}")
+
+    print(f"\n🔍 Version Change Analysis:")
+    print(f"   From: {from_version}")
+    print(f"   To:   {to_version}")
     print("-" * 100 + "\n")
     
-    # Run analysis
-    print("🤖 Running Multi-Agent Analysis...")
+    # Run simplified analysis - automatically cascades through all agents!
+    print("🚀 Running Multi-Agent Cascading Analysis...")
     print("   This may take 30-60 seconds...\n")
     
     try:
-        logger.info("Starting multi-agent analysis...")
-        analysis = orchestrator.analyze_version_change(version_change)
+        logger.info("Starting cascading analysis...")
+        analysis = orchestrator.analyze_simple(from_version, to_version)
         
         # Generate reports
         print("\n" + "="*100)
@@ -89,7 +127,6 @@ def main():
         
         # Generate timestamp-based filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = f"SUSE_SP6_to_SP7_Analysis_{timestamp}"
         
         # Generate all report formats
         results = orchestrator.generate_report(

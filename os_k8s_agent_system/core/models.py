@@ -81,31 +81,53 @@ class Config:
     def __init__(self):
         from dotenv import load_dotenv
         load_dotenv()
-        
+
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.openai_base_url = os.getenv("OPENAI_BASE_URL")
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.google_api_key = os.getenv("GOOGLE_API_KEY")  # Backup API key
         self.llm_provider = os.getenv("LLM_PROVIDER", "openai")
         self.llm_model = os.getenv("LLM_MODEL", "google/gemini-2.0-flash-exp:free")
         self.vector_store = os.getenv("VECTOR_STORE", "chromadb")
         self.chunk_size = int(os.getenv("CHUNK_SIZE", "1000"))
         self.chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "200"))
-        
+
         # Mino-inspired efficiency settings
         self.enable_caching = os.getenv("ENABLE_CACHING", "true").lower() == "true"
         self.max_retries = int(os.getenv("MAX_RETRIES", "3"))
         self.use_streaming = os.getenv("USE_STREAMING", "true").lower() == "true"
-        
+
         # Embedding model - use smaller/free compatible
         self.embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+        # API key tracking for fallback
+        self.current_api_key = self.openai_api_key
+        self.fallback_api_keys = []
+        if self.google_api_key:
+            self.fallback_api_keys.append(self.google_api_key)
         
     def validate(self) -> bool:
         """Validate configuration"""
-        if self.llm_provider == "openai" and not self.openai_api_key:
-            raise ValueError("OPENAI_API_KEY not set")
+        if self.llm_provider == "openai" and not self.openai_api_key and not self.fallback_api_keys:
+            raise ValueError("OPENAI_API_KEY or GOOGLE_API_KEY (fallback) not set")
         if self.llm_provider == "anthropic" and not self.anthropic_api_key:
             raise ValueError("ANTHROPIC_API_KEY not set")
         return True
+
+    def switch_to_fallback_key(self):
+        """Switch to the next available fallback API key"""
+        if self.fallback_api_keys:
+            old_key_preview = self.current_api_key[:20] if self.current_api_key else "None"
+            self.current_api_key = self.fallback_api_keys.pop(0)
+            self.openai_api_key = self.current_api_key
+            new_key_preview = self.current_api_key[:20]
+            print(f"⚠️  Switched to fallback API key: {old_key_preview}... -> {new_key_preview}...")
+            return True
+        return False
+
+    def get_active_api_key(self):
+        """Get the currently active API key"""
+        return self.current_api_key
     
     def get_model_info(self) -> str:
         """Get model information for display"""
